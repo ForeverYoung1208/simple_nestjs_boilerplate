@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  api:
+    container_name: simple_nestjs_api
+    depends_on:
+      - postgres
+    build:  
+      context: docker/api
+      dockerfile: ./Dockerfile
+    user: "node"
+    tty: true
+    volumes:
+      - ./:/app
+    ports:
+      - ${PORT}:3000
+      - ${DEBUG_PORT}:9229
+    command: >
+      bash -c "npm ci
+      && rm -rf dist
+      && npm run start:debug"
+
+  postgres:
+    container_name: simple_nestjs_postgres
+    build:
+      dockerfile: docker/postgres/Dockerfile
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    ports:
+      - ${DB_PORT}:5432
+    volumes:
+      - ./docker/postgres/data:/var/lib/postgresql/data
