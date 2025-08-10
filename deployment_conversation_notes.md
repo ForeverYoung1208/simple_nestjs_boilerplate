@@ -76,3 +76,94 @@ restart: unless-stopped  # or "always"
 - Conversation paused
 - User will continue deployment setup later
 - All options and approaches documented for reference
+
+
+
+## The Problem:
+1. CDK deploys infrastructure → EC2 starts → UserData runs → tries to download from empty S3 bucket → FAILS
+2. Then the script uploads code to S3 (too late!)
+
+## Solution Options:
+
+### Option 1: Two-stage deployment (Recommended)
+bash
+#!/bin/bash
+set -e
+
+echo "Stage 1: Deploy infrastructure without starting services..."
+cd infra
+npm run build
+cdk deploy --require-approval never
+
+echo "Stage 2: Upload code..."
+BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name InfraStack --query "Stacks[0].Outputs[?OutputKey=='CodeBucketName'].OutputValue" --output text)
+cd ..
+aws s3 sync . s3://$BUCKET_NAME/ \
+  --exclude "node_modules/*" \
+  --exclude ".git/*" \
+  --exclude "infra/node_modules/*" \
+  --exclude "infra/cdk.out/*"
+
+echo "Stage 3: Trigger code deployment on EC2..."
+INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name InfraStack --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)
+
+# Send command to download and start services
+aws ssm send-command \
+  --instance-ids $INSTANCE_ID \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=[
+    "cd /home/ec2-user/app",
+    "aws s3 sync s3://'$BUCKET_NAME'/ . --region us-east-1",
+    "chown -R ec2-user:ec2-user /home/ec2-user/app",
+    "sudo -u ec2-user docker compose up -d",
+    "sleep 30",
+    "sudo -u ec2-user docker compose exec -T api npm run migration:run"
+  ]'
+
+
+### Option 2: Modify UserData to wait/retry
+typescript
+userData.addCommands(
+  // ... existing setup commands
+  
+  // Wait and retry logic for S3 sync
+  'cd /home/ec2-user/app',
+  'for i in {1..30}; do',
+  `  if aws s3 sync s3://${codeBucket.bucketName}/ . --region ${this.region}; then`,
+  '    echo "Code downloaded successfully"',
+  '    break',
+  '  else',
+  '    echo "Attempt $i: Code not ready, waiting 30 seconds..."',
+  '    sleep 30',
+  '  fi',
+  'done',
+  
+  // Only start services if code was downloaded
+  'if [ "$(ls -A /home/ec2-user/app)" ]; then',
+  '  chown -R ec2-user:ec2-user /home/ec2-user/app',
+  '  sudo -u ec2-user docker compose up -d',
+  '  sleep 30',
+  '  sudo -u ec2-user docker compose exec -T api npm run migration:run',
+  'else',
+  '  echo "ERROR: No code found in app directory"',
+  'fi',
+);
+
+
+### Option 3: Pre-upload code to S3 in CDK
+typescript
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+
+// Deploy code as part of CDK stack
+new s3deploy.BucketDeployment(this, `${projectName}CodeDeployment`, {
+  sources: [s3deploy.Source.asset('../', {
+    exclude: ['node_modules', '.git', 'infra/node_modules', 'infra/cdk.out'],
+  })],
+  destinationBucket: codeBucket,
+});
+
+
+I recommend Option 1 - it's the most reliable and gives you control over the deployment process. Would you like me to show you the complete two-
+stage deployment script?
+
+> 

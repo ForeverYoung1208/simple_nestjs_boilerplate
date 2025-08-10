@@ -1,16 +1,364 @@
 import * as cdk from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct } from 'constructs';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { IAppStackConfig } from '../bin/infra';
 
 export class InfraStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+  constructor(
+    scope: Construct,
+    id: string,
+    config: IAppStackConfig,
+    props?: cdk.StackProps,
+  ) {
+    super(scope, id, { ...props, crossRegionReferences: true });
+    const { projectName, domainName, fullSubDomainNameApi, subDomainNameApi } =
+      config;
+    /**
+     *
+     *
+     *
+     * COMMON
+     *
+     *
+     *
+     */
 
-    // The code that defines your stack goes here
+    // Add tag for cost tracking
+    cdk.Tags.of(this).add('AppManagerCFNStackKey', this.stackName);
 
-    // example resource
-    // const queue = new sqs.Queue(this, 'InfraQueue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
+    // Create S3 bucket for code
+    const codeBucket = new s3.Bucket(this, `${projectName}CodeBucket`, {
+      bucketName: `${projectName}-code-bucket-${this.account}`, // Make it globally unique
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true, // Clean up when stack is deleted
+    });
+    // Deploy code as part of CDK stack
+    new s3deploy.BucketDeployment(this, `${projectName}CodeDeployment`, {
+      sources: [
+        s3deploy.Source.asset('../', {
+          exclude: [
+            'node_modules',
+            '.git',
+            '.env',
+            'infra',
+            'dist',
+            'test',
+            'docker/postgres/data',
+            'docker/redis/data',
+          ],
+        }),
+      ],
+      destinationBucket: codeBucket,
+    });
+
+    // SSM Parameters
+    const dbPasswordParameterValue = Array(10)
+      .fill(null)
+      .map(() => Math.floor(Math.random() * 36).toString(36))
+      .join('');
+    const jwtSecretKeyParameterValue = Array(10)
+      .fill(null)
+      .map(() => Math.floor(Math.random() * 36).toString(36))
+      .join('');
+    const jwtRefreshSecretKeyParameterValue = Array(10)
+      .fill(null)
+      .map(() => Math.floor(Math.random() * 36).toString(36))
+      .join('');
+    const dbPasswordParameter = new ssm.StringParameter(
+      this,
+      `${projectName}DbPasswordParameter`,
+      {
+        parameterName: `/${projectName}/db-password`,
+        stringValue: dbPasswordParameterValue,
+        description: 'DB password',
+      },
+    );
+    const jwtSecretKeyParameter = new ssm.StringParameter(
+      this,
+      `${projectName}JwtSecretKeyParameter`,
+      {
+        parameterName: `/${projectName}/jwt-secret-key`,
+        stringValue: jwtSecretKeyParameterValue,
+        description: 'JWT secret key',
+      },
+    );
+    const jwtRefreshSecretKeyParameter = new ssm.StringParameter(
+      this,
+      `${projectName}JwtRefreshSecretKeyParameter`,
+      {
+        parameterName: `/${projectName}/jwt-refresh-secret-key`,
+        stringValue: jwtRefreshSecretKeyParameterValue,
+        description: 'JWT refresh secret key',
+      },
+    );
+    /**
+     *
+     *
+     *
+     * NETWORKS
+     *
+     *
+     *
+     */
+
+    // VPC
+    const vpc = new ec2.Vpc(this, `${projectName}VPC`, {
+      ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
+      maxAzs: 1,
+      natGateways: 0,
+      subnetConfiguration: [
+        {
+          cidrMask: 24,
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+      ],
+    });
+
+    //Lookup the zone based on domain name
+    const zone = route53.HostedZone.fromLookup(this, `${projectName}Zone`, {
+      domainName: domainName,
+    });
+
+    // Create certificate in us-east-1 for CloudFront
+    const certificateStack = new cdk.Stack(
+      this,
+      `${projectName}CertificateStack`,
+      {
+        env: {
+          account: this.account,
+          region: 'us-east-1', // Certificate must be in us-east-1 for CloudFront
+        },
+      },
+    );
+
+    // Create the certificate in the us-east-1 stack
+    const certificate = new acm.Certificate(
+      certificateStack,
+      `${projectName}Certificate`,
+      {
+        domainName: fullSubDomainNameApi,
+        validation: acm.CertificateValidation.fromDns(
+          route53.HostedZone.fromLookup(
+            certificateStack,
+            `${projectName}ZoneForCert`,
+            {
+              domainName: domainName,
+            },
+          ),
+        ),
+      },
+    );
+
+    /**
+     *
+     *
+     *
+     * SECURITY
+     *
+     *
+     *
+     */
+
+    const apiSecurityGroup = new ec2.SecurityGroup(
+      this,
+      `${projectName}ApiSecurityGroup`,
+      {
+        vpc,
+        description: 'Serurity group for API',
+        allowAllOutbound: true,
+      },
+    );
+
+    apiSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(3000),
+      'Allow traffic from any ipv4 to port 3000',
+    );
+
+    // TODO delete after debug
+    apiSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(22),
+      'Allow SSH access',
+    );
+
+    /**
+     *
+     *
+     *
+     * EC2
+     *
+     *
+     *
+     */
+    // IAM Role for EC2 instance
+    const ec2Role = new iam.Role(this, `${projectName}EC2Role`, {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'AmazonSSMManagedInstanceCore',
+        ),
+      ],
+    });
+
+    // Allow EC2 to read SSM parameters
+    ec2Role.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+        resources: [
+          dbPasswordParameter.parameterArn,
+          jwtSecretKeyParameter.parameterArn,
+          jwtRefreshSecretKeyParameter.parameterArn,
+        ],
+      }),
+    );
+
+    codeBucket.grantRead(ec2Role);
+
+    // User data script
+    const userData = ec2.UserData.forLinux();
+    userData.addCommands(
+      'yum update -y',
+      'yum install -y docker git docker-compose-plugin',
+      'systemctl start docker',
+      'systemctl enable docker',
+      'usermod -a -G docker ec2-user',
+      'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"',
+      'unzip awscliv2.zip',
+      './aws/install',
+      'mkdir -p /var/www/app',
+      'chown ec2-user:ec2-user /var/www/app',
+      'cd /var/www/app',
+      `aws s3 sync s3://${codeBucket.bucketName}/ . --region ${this.region}`,
+      'chown -R ec2-user:ec2-user /var/www/app',
+
+      // Fetch SSM parameters
+      `DB_PASSWORD=$(aws ssm get-parameter --name "/${projectName}/db-password" --with-decryption --query "Parameter.Value" --output text --region ${this.region})`,
+      `JWT_SECRET_KEY=$(aws ssm get-parameter --name "/${projectName}/jwt-secret-key" --with-decryption --query "Parameter.Value" --output text --region ${this.region})`,
+      `JWT_REFRESH_SECRET_KEY=$(aws ssm get-parameter --name "/${projectName}/jwt-refresh-secret-key" --with-decryption --query "Parameter.Value" --output text --region ${this.region})`,
+
+      // Create environment file (needed for docker-compose)
+      `echo "PORT=3000" > .env`,
+      `echo "DEBUG_PORT=9229" >> .env`,
+      `echo "NODE_ENV=${config.targetNodeEnv}" >> .env`,
+      `echo "SITE_ORIGIN=${config.siteOrigin}" >> .env`,
+      `echo "DB_HOST=postgres" >> .env`,
+      `echo "DB_PORT=5432" >> .env`,
+      `echo "DB_DATABASE=${config.databaseName}" >> .env`,
+      `echo "DB_USERNAME=${config.databaseUsername}" >> .env`,
+      `echo "DB_PASSWORD=$DB_PASSWORD" >> .env`,
+      `echo "REDIS_PORT=6379" >> .env`,
+      `echo "ACCESS_TOKEN_TTL=900" >> .env`,
+      `echo "REFRESH_TOKEN_TTL=604800" >> .env`,
+      `echo "JWT_SECRET_KEY=$JWT_SECRET_KEY" >> .env`,
+      `echo "JWT_REFRESH_SECRET_KEY=$JWT_REFRESH_SECRET_KEY" >> .env`,
+      `echo "BCRYPT_SALT_ROUNDS=8" >> .env`,
+
+      // Start Docker Compose
+      'sudo -u ec2-user docker compose up -d',
+
+      // Wait for services to start, then run migrations
+      'sleep 30',
+      'sudo -u ec2-user docker compose exec -T api npm run migration:run',
+    );
+
+    const keyPair = new ec2.CfnKeyPair(this, `${projectName}KeyPair`, {
+      keyName: `${projectName}-key`,
+    });
+
+    const ec2Instance = new ec2.Instance(this, `${projectName}EC2Instance`, {
+      vpc,
+      securityGroup: apiSecurityGroup,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PUBLIC,
+      },
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T3,
+        ec2.InstanceSize.MEDIUM,
+      ),
+      machineImage: new ec2.AmazonLinuxImage(),
+      role: ec2Role,
+      userData: userData,
+      keyPair: ec2.KeyPair.fromKeyPairName(
+        this,
+        `${projectName}KeyPairRef`,
+        keyPair.keyName,
+      ),
+    });
+
+    // Create key pair
+
+    /**
+     *
+     *
+     *
+     * CLOUDFRONT AND ROUTE53
+     *
+     *
+     *
+     */
+
+    // add cloudfront distribution to handle https
+    const distribution = new cloudfront.Distribution(
+      this,
+      `${projectName}Distribution`,
+      {
+        defaultBehavior: {
+          origin: new origins.HttpOrigin(ec2Instance.instancePublicDnsName, {
+            httpPort: 3000,
+          }),
+          viewerProtocolPolicy:
+            cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL, // Important for REST (GET, POST, PUT, DELETE)
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED, // For API responses
+        },
+        domainNames: [fullSubDomainNameApi],
+        certificate: certificate,
+      },
+    );
+
+    new route53.ARecord(this, `${projectName}ARecord`, {
+      zone: zone,
+      recordName: subDomainNameApi,
+      target: route53.RecordTarget.fromAlias(
+        new route53targets.CloudFrontTarget(distribution),
+      ),
+    });
+
+    /**
+     *
+     *
+     *
+     * OUTPUTS
+     *
+     *
+     *
+     */
+
+    // Output the ec2 key pair ID (you'll need to get private key from AWS console)
+    new cdk.CfnOutput(this, 'KeyPairId', {
+      value: keyPair.getAtt('KeyPairId').toString(),
+    });
+    new cdk.CfnOutput(this, 'CodeBucketName', {
+      value: codeBucket.bucketName,
+      description: 'S3 bucket for code deployment',
+    });
+
+    // Output the EC2 instance ID
+    new cdk.CfnOutput(this, 'InstanceId', {
+      value: ec2Instance.instanceId,
+      description: 'EC2 instance ID',
+    });
   }
 }
