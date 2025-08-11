@@ -25,7 +25,7 @@ async function bootstrap(): Promise<void> {
   if ([ENV_LOCAL, ENV_STAGE, ENV_DEV].includes(currentEnv)) {
     const apiVersion = process.env.npm_package_version;
     const swaggerConfig = new DocumentBuilder()
-      .setTitle('KSG demo API')
+      .setTitle('simple-nestjs demo API')
       .setDescription(
         `Api description for environment '${currentEnv}' version ${apiVersion}`,
       )

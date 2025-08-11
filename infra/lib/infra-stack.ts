@@ -230,10 +230,20 @@ export class InfraStack extends cdk.Stack {
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
       'yum update -y',
-      'yum install -y docker git docker-compose-plugin',
+      'yum install -y docker git',
       'systemctl start docker',
       'systemctl enable docker',
       'usermod -a -G docker ec2-user',
+      'chmod 666 /var/run/docker.sock',
+
+      // Install Docker Compose plugin (more reliable than standalone binary)
+      'mkdir -p /usr/local/lib/docker/cli-plugins',
+      'curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose',
+      'chmod +x /usr/local/lib/docker/cli-plugins/docker-compose',
+
+      // Also create a symlink for backward compatibility
+      'ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose',
+
       'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"',
       'unzip awscliv2.zip',
       './aws/install',
@@ -266,11 +276,11 @@ export class InfraStack extends cdk.Stack {
       `echo "BCRYPT_SALT_ROUNDS=8" >> .env`,
 
       // Start Docker Compose
-      'sudo -u ec2-user docker compose up -d',
+      'sudo -u ec2-user /usr/local/bin/docker-compose up -d',
 
       // Wait for services to start, then run migrations
       'sleep 30',
-      'sudo -u ec2-user docker compose exec -T api npm run migration:run',
+      'sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm run migration:run',
     );
 
     const keyPair = new ec2.CfnKeyPair(this, `${projectName}KeyPair`, {
@@ -287,7 +297,7 @@ export class InfraStack extends cdk.Stack {
         ec2.InstanceClass.T3,
         ec2.InstanceSize.MEDIUM,
       ),
-      machineImage: new ec2.AmazonLinuxImage(),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
       role: ec2Role,
       userData: userData,
       keyPair: ec2.KeyPair.fromKeyPairName(
@@ -317,6 +327,7 @@ export class InfraStack extends cdk.Stack {
         defaultBehavior: {
           origin: new origins.HttpOrigin(ec2Instance.instancePublicDnsName, {
             httpPort: 3000,
+            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY, // Force HTTP to origin
           }),
           viewerProtocolPolicy:
             cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
