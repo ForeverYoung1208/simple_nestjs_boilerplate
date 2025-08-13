@@ -33,6 +33,19 @@ services:
     volumes:
       - ./docker/postgres/data:/var/lib/postgresql/data
 
+  postgres_tests:
+    container_name: simple_nestjs_postgres_test      
+    build:
+      dockerfile: docker/postgres/Dockerfile
+    volumes:
+      - ./docker/postgres/data_tests:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: username_test
+      POSTGRES_PASSWORD: secret_test
+      POSTGRES_DB: someproject_test
+    ports:
+      - 54321:5432
+
   redis:
     container_name: simple_nestjs_redis
     image: redis:alpine
