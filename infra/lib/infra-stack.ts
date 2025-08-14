@@ -53,6 +53,7 @@ export class InfraStack extends cdk.Stack {
             'dist',
             'test',
             'docker/postgres/data',
+            'docker/postgres/data_tests',
             'docker/redis/data',
           ],
         }),
@@ -295,7 +296,7 @@ export class InfraStack extends cdk.Stack {
       },
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.T3,
-        ec2.InstanceSize.MEDIUM,
+        ec2.InstanceSize.MICRO,
       ),
       machineImage: ec2.MachineImage.latestAmazonLinux2023(),
       role: ec2Role,
