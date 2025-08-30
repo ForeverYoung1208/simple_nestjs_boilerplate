@@ -21,7 +21,7 @@ jobs:
             **/node_modules
             **/.env.test
             **/.env.example
-          key: ${{ runner.os }}-node-npm-${{ hashFiles('**/package-lock.json', '**/.env.test', '**/.env.example') }}
+          key: ${{ runner.os }}-node-npm-${{ hashFiles('./package-lock.json', './.env.test', './.env.example') }}
           restore-keys: |
             ${{ runner.os }}-node-npm-
       - name: Install deps
@@ -48,21 +48,17 @@ jobs:
             **/node_modules
             **/.env.test
             **/.env.example
-          key: ${{ runner.os }}-node-npm-${{ hashFiles('**/package-lock.json', '**/.env.test', '**/.env.example') }}
+          key: ${{ runner.os }}-node-npm-${{ hashFiles('./package-lock.json', './.env.test', './.env.example') }}
       - name: Run unit tests
         run: npm run test:unit
 
-  test-api-int:
+  test-api-int-e2e:
     runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: isbang/compose-action@v1.5.1
-        with:
-          compose-file: "./docker/docker-compose.test-ci.yml"
-          services: |
-            postgres_test
-            redis_test
+      - run: cp .env.test-ci .env -f
+      - run: cat .env
       - uses: actions/cache@v4
         id: npm-cache
         with:
@@ -71,7 +67,12 @@ jobs:
             **/node_modules
             **/.env.test
             **/.env.example
-          key: ${{ runner.os }}-node-npm-${{ hashFiles('**/package-lock.json', '**/.env.test', '**/.env.example') }}
+          key: ${{ runner.os }}-node-npm-${{ hashFiles('./package-lock.json', './.env.test', './.env.example') }}
+      - uses: isbang/compose-action@v1.5.1
+        with:
+          compose-file: "docker-compose.yml"
+          services: |
+            postgres_tests
       - run: npm ci
       - name: Get build result artifact
         uses: actions/download-artifact@v4
@@ -81,5 +82,7 @@ jobs:
       - run: cp .env.test-ci .env.test -f
       - name: Run migrations
         run: npm run migration:test:run
-      - name: Run ingegration tests
+      - name: Run ingegration and e2e tests
         run: npm run test:int
+      - name: Run e2e tests
+        run: npm run test:e2e
