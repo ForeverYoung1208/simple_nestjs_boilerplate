@@ -34,7 +34,7 @@ switch (targetEnv) {
     break;
   default:
     throw new Error(
-      'target targetEnv is not defined; use `npx cdk deploy --context targetEnv=dev` , where targetEnv= dev | stage | prod',
+      'target targetEnv is not defined; use `npx cdk deploy --all --context targetEnv=dev` , where targetEnv= dev | stage | prod. NOTE!!! flag `--all` is needed because additionoal stack will be deployed to region us-east-1 (it is needed for certificate to work with CloudFront).',
     );
 }
 // Build the application before deployment
