@@ -34,7 +34,13 @@ The bootstrap is a one-time setup per region and creates minimal, low-cost infra
 ## Deploy
 
 ```bash
-$ npx cdk deploy --all--context targetEnv=dev
+$ npx cdk deploy --all --context targetEnv=dev
+```
+
+OR if you want to cancel rollback if something went wrong (for debug purposes):
+
+```bash
+$ npx cdk deploy --all --context targetEnv=dev --no-rollback
 ```
 
 
