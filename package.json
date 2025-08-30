@@ -22,11 +22,12 @@
     "migration:revert": "npm run typeorm migration:revert",
     "migration:generate": "npm run typeorm migration:generate src/db/migrations/$npm_config_name",
     "migration:create": "npx typeorm-ts-node-commonjs migration:create src/db/migrations/$npm_config_name",
-    "test": "jest",
+    "test:unit": "jest --selectProjects api-unit",
+    "test:e2e": "jest --selectProjects api-e2e --detectOpenHandles",
+    "test:int": "jest --selectProjects api-integration --detectOpenHandles",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -85,15 +86,40 @@
       "json",
       "ts"
     ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "testTimeout": 50000,
+    "projects": [
+      {
+        "displayName": "api-e2e",
+        "testRegex": ".*\\.e2e-spec\\.ts$",
+        "transform": {
+          "^.+\\.ts": "ts-jest"
+        },
+        "maxWorkers": 1,
+        "rootDir": "test"
+      },
+      {
+        "displayName": "api-unit",
+        "testRegex": ".*\\.spec\\.ts$",
+        "transform": {
+          "^.+\\.ts": "ts-jest"
+        },
+        "maxWorkers": 1,
+        "rootDir": "src"
+      },
+      {
+        "displayName": "api-integration",
+        "testRegex": ".*\\.int-spec\\.ts$",
+        "transform": {
+          "^.+\\.ts": "ts-jest"
+        },
+        "maxWorkers": 1,
+        "rootDir": "test"
+      }
+    ]
   }
 }
