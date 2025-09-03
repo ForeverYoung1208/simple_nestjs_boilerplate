@@ -20,8 +20,13 @@ export class InfraStack extends cdk.Stack {
     props?: cdk.StackProps,
   ) {
     super(scope, id, { ...props, crossRegionReferences: true });
-    const { projectName, domainName, fullSubDomainNameApi, subDomainNameApi } =
-      config;
+    const {
+      projectName,
+      domainName,
+      fullSubDomainNameApp,
+      subDomainNameApp,
+      userDeploerName,
+    } = config;
     /**
      *
      *
@@ -147,7 +152,7 @@ export class InfraStack extends cdk.Stack {
       certificateStack,
       `${projectName}Certificate`,
       {
-        domainName: fullSubDomainNameApi,
+        domainName: fullSubDomainNameApp,
         validation: acm.CertificateValidation.fromDns(
           route53.HostedZone.fromLookup(
             certificateStack,
@@ -231,7 +236,7 @@ export class InfraStack extends cdk.Stack {
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
       'yum update -y',
-      'yum install -y docker git',
+      'yum install -y docker git unzip',
       'systemctl start docker',
       'systemctl enable docker',
       'usermod -a -G docker ec2-user',
@@ -277,7 +282,7 @@ export class InfraStack extends cdk.Stack {
       `echo "BCRYPT_SALT_ROUNDS=8" >> .env`,
 
       // Start Docker Compose
-      'sudo -u ec2-user /usr/local/bin/docker-compose up -d',
+      'sudo -u ec2-user /usr/local/bin/docker-compose up api postgres redis -d',
 
       // Wait for services to start, then run migrations
       'sleep 30',
@@ -308,7 +313,8 @@ export class InfraStack extends cdk.Stack {
       ),
     });
 
-    // Create key pair
+    // Tag instance for easy SSM targeting
+    cdk.Tags.of(ec2Instance).add('Name', `${projectName}-ec2`);
 
     /**
      *
@@ -320,33 +326,127 @@ export class InfraStack extends cdk.Stack {
      *
      */
 
+    // S3 bucket for frontend
+    const frontendBucket = new s3.Bucket(this, `${projectName}FrontendBucket`, {
+      bucketName: `${projectName}-frontend-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      websiteIndexDocument: 'index.html',
+      websiteErrorDocument: 'index.html', // For SPA routing
+      publicReadAccess: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS_ONLY,
+    });
+
     // add cloudfront distribution to handle https
     const distribution = new cloudfront.Distribution(
       this,
       `${projectName}Distribution`,
       {
         defaultBehavior: {
-          origin: new origins.HttpOrigin(ec2Instance.instancePublicDnsName, {
-            httpPort: 3000,
-            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY, // Force HTTP to origin
-          }),
+          // Frontend as default behavior
+          origin: new origins.S3StaticWebsiteOrigin(frontendBucket),
           viewerProtocolPolicy:
             cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL, // Important for REST (GET, POST, PUT, DELETE)
-          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED, // For API responses
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         },
-        domainNames: [fullSubDomainNameApi],
+        additionalBehaviors: {
+          '/api/*': {
+            // API behavior
+            origin: new origins.HttpOrigin(ec2Instance.instancePublicDnsName, {
+              httpPort: 3000,
+              protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+            }),
+            viewerProtocolPolicy:
+              cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+            cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          },
+        },
+
+        domainNames: [fullSubDomainNameApp],
         certificate: certificate,
       },
     );
 
     new route53.ARecord(this, `${projectName}ARecord`, {
       zone: zone,
-      recordName: subDomainNameApi,
+      recordName: subDomainNameApp,
       target: route53.RecordTarget.fromAlias(
         new route53targets.CloudFrontTarget(distribution),
       ),
     });
+
+    /**
+     *
+     *
+     *
+     * USER DEPLOYER
+     *
+     *
+     *
+     */
+
+    // Add IAM user to deploy code
+    const userDeploer = new iam.User(this, `${projectName}Deployer`, {
+      userName: userDeploerName,
+    });
+
+    userDeploer.attachInlinePolicy(
+      new iam.Policy(this, `${projectName}DeployerPolicy`, {
+        policyName: `publish-to-${projectName}`,
+        statements: [
+          new iam.PolicyStatement({
+            actions: ['ssm:GetParameter'],
+            effect: iam.Effect.ALLOW,
+            resources: [
+              `arn:aws:ssm:${this.region}:${this.account}:parameter/${projectName}*`,
+            ],
+          }),
+
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['s3:*'],
+            resources: [
+              `arn:aws:s3:::cdk-hnb659fds-assets-${this.account}-${this.region}`,
+              `arn:aws:s3:::cdk-hnb659fds-assets-${this.account}-${this.region}/*`,
+            ],
+          }),
+
+          // Allow publishing artifacts to the dedicated code bucket
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['s3:*'],
+            resources: [codeBucket.bucketArn, `${codeBucket.bucketArn}/*`],
+          }),
+
+          // Allow triggering SSM RunCommand to restart docker on the instance
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'ssm:SendCommand',
+              'ssm:ListCommandInvocations',
+              'ssm:ListCommands',
+              'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+          }),
+
+          // EC2 permissions for EB environment management
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['ec2:Describe*'],
+            resources: ['*'],
+          }),
+
+          // CloudWatch Logs permissions
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['logs:*'],
+            resources: ['*'],
+          }),
+        ],
+      }),
+    );
 
     /**
      *
@@ -368,9 +468,19 @@ export class InfraStack extends cdk.Stack {
     });
 
     // Output the EC2 instance ID
-    new cdk.CfnOutput(this, 'InstanceId', {
+    new cdk.CfnOutput(this, 'EC2 InstanceId', {
       value: ec2Instance.instanceId,
       description: 'EC2 instance ID',
+    });
+
+    new cdk.CfnOutput(this, 'UserDeploerName', {
+      value: userDeploerName,
+      description: 'User deployer name',
+    });
+
+    new cdk.CfnOutput(this, 'FrontendBucketName', {
+      value: frontendBucket.bucketName,
+      description: 'S3 bucket for frontend deployment',
     });
   }
 }

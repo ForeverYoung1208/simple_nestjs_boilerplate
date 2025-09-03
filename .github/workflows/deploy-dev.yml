@@ -11,10 +11,9 @@ jobs:
     if: github.event.pull_request.merged
     runs-on: ubuntu-latest
     env:
-      EB_BUCKET: ${{vars.EB_BUCKET}}
-      EB_APP_NAME: ${{vars.EB_APP_NAME}}
-      EB_API_ENV_NAME: ${{vars.EB_API_ENV_NAME}}
-      EB_WORKER_ENV_NAME: ${{vars.EB_WORKER_ENV_NAME}}
+      CODE_BUCKET: ${{vars.CODE_BUCKET}}
+      REGION: ${{ vars.AWS_REGION }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
 
     steps:
       - name: Checkout
@@ -56,30 +55,37 @@ jobs:
         name: Upload to S3
         run: |
           FILE_NAME="app-${{ github.sha }}.zip"
-          aws s3 cp app.zip s3://$EB_BUCKET/$FILE_NAME
+          aws s3 cp app.zip s3://$CODE_BUCKET/$FILE_NAME
           echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
 
       - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
-        name: Create new Elastic Beanstalk Application Version
+        name: Update EC2 from S3 and restart docker-compose
         run: |
-          VERSION_LABEL="v-${{ github.run_number }}-${{ github.sha }}"
-          aws elasticbeanstalk create-application-version \
-            --application-name "$EB_APP_NAME" \
-            --version-label $VERSION_LABEL \
-            --source-bundle S3Bucket="$EB_BUCKET",S3Key="$FILE_NAME"
-          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
+          # Send SSM command to sync code, rebuild, restart, and run migrations
+          aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=instanceids,Values=$EC2_INSTANCE_ID" \
+            --comment "Deploy $GITHUB_SHA" \
+            --parameters commands='[
+              "set -e",
+              "cd /var/www/app",
+              "aws s3 cp s3://'"$CODE_BUCKET"'/'"$FILE_NAME"' app.zip --region '"$REGION"'",
+              "sudo -u ec2-user unzip -o app.zip",
+              "sudo -u ec2-user /usr/local/bin/docker-compose up api postgres redis -d --build",
+              "sleep 15",
+              "sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm ci",
+              "sleep 15",
+              "sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm run migration:run"
+            ]' \
+            --region "$REGION" \
+            --query "Command.CommandId" \
+            --output text > command_id.txt
 
-      - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
-        name: Update Environment API
-        run: |
-          aws elasticbeanstalk update-environment \
-            --environment-name "$EB_API_ENV_NAME" \
-            --version-label "$VERSION_LABEL"
+          COMMAND_ID=$(cat command_id.txt)
+          echo "SSM CommandId: $COMMAND_ID"
 
-      - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
-        name: Update Environment WORKER
-        run: |
-          aws elasticbeanstalk update-environment \
-            --environment-name "$EB_WORKER_ENV_NAME" \
-            --version-label "$VERSION_LABEL"
-
+          # Optionally wait for completion
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --region "$REGION"
