@@ -33,6 +33,12 @@ The bootstrap is a one-time setup per region and creates minimal, low-cost infra
 
 ## Deploy
 
+All infrastructure creation commands should be run from `infra` directory
+
+```bash
+cd infra
+```
+
 ```bash
 $ npx cdk deploy --all --context targetEnv=dev
 ```
