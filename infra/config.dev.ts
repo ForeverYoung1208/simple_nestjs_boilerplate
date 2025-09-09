@@ -1,7 +1,7 @@
 import { IAppStackConfig } from './bin/infra';
 
 // define project name (any) - will be used as part of naming for some resources like docker image, database, etc.
-const projectShortName = 'ionicapp';
+const projectShortName = 'nestjs-example';
 
 // define postfix for environment resources to specify
 const suffix = '-dev';
