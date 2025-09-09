@@ -281,12 +281,15 @@ export class InfraStack extends cdk.Stack {
       `echo "JWT_REFRESH_SECRET_KEY=$JWT_REFRESH_SECRET_KEY" >> .env`,
       `echo "BCRYPT_SALT_ROUNDS=8" >> .env`,
 
-      // Start Docker Compose
-      'sudo -u ec2-user /usr/local/bin/docker-compose up api postgres redis -d',
+      // Build app
+      'sudo -u ec2-user /usr/local/bin/docker-compose -f docker-compose-dev.yml up api-build',
+
+      // Start services
+      'sudo -u ec2-user /usr/local/bin/docker-compose -f docker-compose-dev.yml up api-run postgres redis -d',
 
       // Wait for services to start, then run migrations
       'sleep 30',
-      'sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm run migration:run',
+      'sudo -u ec2-user /usr/local/bin/docker-compose exec -T api-run npm run migration:run',
     );
 
     const keyPair = new ec2.CfnKeyPair(this, `${projectName}KeyPair`, {
@@ -356,6 +359,7 @@ export class InfraStack extends cdk.Stack {
               httpPort: 3000,
               protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
             }),
+            originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
             viewerProtocolPolicy:
               cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
@@ -419,6 +423,16 @@ export class InfraStack extends cdk.Stack {
             resources: [codeBucket.bucketArn, `${codeBucket.bucketArn}/*`],
           }),
 
+          // Allow publishing frontend artifacts to the dedicated frontend bucket
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['s3:*'],
+            resources: [
+              frontendBucket.bucketArn,
+              `${frontendBucket.bucketArn}/*`,
+            ],
+          }),
+
           // Allow triggering SSM RunCommand to restart docker on the instance
           new iam.PolicyStatement({
             effect: iam.Effect.ALLOW,
@@ -442,6 +456,13 @@ export class InfraStack extends cdk.Stack {
           new iam.PolicyStatement({
             effect: iam.Effect.ALLOW,
             actions: ['logs:*'],
+            resources: ['*'],
+          }),
+
+          // CloudFront permissions
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['cloudfront:CreateInvalidation'],
             resources: ['*'],
           }),
         ],
@@ -481,6 +502,11 @@ export class InfraStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FrontendBucketName', {
       value: frontendBucket.bucketName,
       description: 'S3 bucket for frontend deployment',
+    });
+
+    new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
+      value: distribution.distributionId,
+      description: 'CloudFront distribution ID',
     });
   }
 }

@@ -49,19 +49,19 @@ jobs:
 
       - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
         name: Zip application
-        run: zip -r app.zip . -x ".git/*" ".github/*" "infra/" "docker/" "test/"
+        run: zip -r app.zip . -x ".git/*" ".github/*" "infra/*" "docker/*" "test/*" --quiet
 
       - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
         name: Upload to S3
         run: |
-          FILE_NAME="app-${{ github.sha }}.zip"
+          FILE_NAME="app-$(date +%Y-%m-%d_%H:%M)-${{ github.sha }}.zip"
           aws s3 cp app.zip s3://$CODE_BUCKET/$FILE_NAME
           echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
 
       - if: ${{ steps.cache-api.outputs.cache-hit != 'true' }}
         name: Update EC2 from S3 and restart docker-compose
         run: |
-          # Send SSM command to sync code, rebuild, restart, and run migrations
+          # Send SSM command to download code and build artifact, restart docker-compose, and run migrations
           aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --targets "Key=instanceids,Values=$EC2_INSTANCE_ID" \
@@ -70,12 +70,11 @@ jobs:
               "set -e",
               "cd /var/www/app",
               "aws s3 cp s3://'"$CODE_BUCKET"'/'"$FILE_NAME"' app.zip --region '"$REGION"'",
-              "sudo -u ec2-user unzip -o app.zip",
-              "sudo -u ec2-user /usr/local/bin/docker-compose up api postgres redis -d --build",
+              "sudo -u ec2-user unzip -qo app.zip",
               "sleep 15",
-              "sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm ci",
+              "sudo -u ec2-user /usr/local/bin/docker-compose -f docker-compose-dev.yml restart api-run postgres redis",
               "sleep 15",
-              "sudo -u ec2-user /usr/local/bin/docker-compose exec -T api npm run migration:run"
+              "sudo -u ec2-user /usr/local/bin/docker-compose -f docker-compose-dev.yml exec -T api-run npm run migration:run"
             ]' \
             --region "$REGION" \
             --query "Command.CommandId" \
@@ -83,9 +82,3 @@ jobs:
 
           COMMAND_ID=$(cat command_id.txt)
           echo "SSM CommandId: $COMMAND_ID"
-
-          # Optionally wait for completion
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$EC2_INSTANCE_ID" \
-            --region "$REGION"

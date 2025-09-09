@@ -8,8 +8,8 @@ export interface IAppStackConfig {
   databaseName: string;
   domainName: string;
   projectName: string;
-  subDomainNameApi: string;
-  fullSubDomainNameApi: string;
+  subDomainNameApp: string;
+  fullSubDomainNameApp: string;
   userDeploerName: string;
   databaseUsername: string;
   targetNodeEnv: string;

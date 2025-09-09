@@ -1,10 +1,27 @@
 version: '3.8'
 
 services:
-  api:
-    container_name: simple_nestjs_api
+  api-build:
+    container_name: simple_nestjs_api_build
+    restart: "no"
+    build:  
+      context: docker/api
+      dockerfile: ./Dockerfile
+    user: "node"
+    tty: true
+    volumes:
+      - ./:/app
+    command: >
+      bash -c "npm ci
+      && rm -rf dist
+      && npm run build"
+
+  api-run:
+    container_name: simple_nestjs_api_run
+    restart: unless-stopped
     depends_on:
       - postgres
+      - redis
     build:  
       context: docker/api
       dockerfile: ./Dockerfile
@@ -15,10 +32,7 @@ services:
     ports:
       - ${PORT}:3000
       - ${DEBUG_PORT}:9229
-    command: >
-      bash -c "npm ci
-      && rm -rf dist
-      && npm run start:debug"
+    command: ["npm", "run", "start:prod"]
 
   postgres:
     container_name: simple_nestjs_postgres
@@ -33,19 +47,6 @@ services:
       - ${DB_PORT}:5432
     volumes:
       - ./docker/postgres/data:/var/lib/postgresql/data
-
-  postgres_tests:
-    container_name: simple_nestjs_postgres_test      
-    build:
-      dockerfile: docker/postgres/Dockerfile
-    volumes:
-      - ./docker/postgres/data_tests:/var/lib/postgresql/data
-    environment:
-      POSTGRES_USER: username_test
-      POSTGRES_PASSWORD: secret_test
-      POSTGRES_DB: someproject_test
-    ports:
-      - 54321:5432
 
   redis:
     container_name: simple_nestjs_redis
