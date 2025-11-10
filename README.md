@@ -1,3 +1,10 @@
+# This repo implements the next deployment variant
+- simple API without worker, in a single EC2 instance.
+- posgres inside docker in the same EC2 instance.
+- redis insilde docker in the same EC2 instance
+
+Simple, cost effective, but low resilience
+
 # Project start
 
 ## 1. Start app
